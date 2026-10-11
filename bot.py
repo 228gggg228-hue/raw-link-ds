@@ -82,7 +82,7 @@ class ActionView(discord.ui.View):
 
     @discord.ui.button(label="loadstring", style=discord.ButtonStyle.danger)
     async def make_loadstring(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(f"```lua\n{wrap_loadstring(self.link)}\n```")
+        await interaction.response.send_message(wrap_loadstring(self.link))
 
 
 @client.event
