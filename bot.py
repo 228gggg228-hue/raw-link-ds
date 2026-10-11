@@ -11,6 +11,7 @@ client = discord.Client(intents=intents)
 MY_CHANNEL_ID = 1558758327377338460
 GIF_URL = "https://i.imgur.com/iZuWJ2h.gif"
 FILE_GIF_URL = "https://i.imgur.com/O7diHFX.gif"
+PASTEFY_GIF_URL = "https://i.imgur.com/IzDu2Os.gif"
 URL_PATTERN = re.compile(r'https?://[^\s<>"]+')
 
 
@@ -150,7 +151,9 @@ class FileView(discord.ui.View):
             await interaction.followup.send(f"❌ Ошибка Pastefy: `{e}`")
             return
         view = LinkView(paste_link)
-        await interaction.followup.send(paste_link, view=view)
+        embed = discord.Embed()
+        embed.set_image(url=PASTEFY_GIF_URL)
+        await interaction.followup.send(paste_link, view=view, embed=embed)
 
 
 @client.event
