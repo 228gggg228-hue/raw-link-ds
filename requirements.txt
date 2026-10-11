@@ -1,2 +1,3 @@
 staypresent[prod]
 discord.py
+aiohttp
