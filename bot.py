@@ -10,6 +10,7 @@ client = discord.Client(intents=intents)
 
 MY_CHANNEL_ID = 1558758327377338460
 GIF_URL = "https://i.imgur.com/iZuWJ2h.gif"
+FILE_GIF_URL = "https://i.imgur.com/O7diHFX.gif"
 URL_PATTERN = re.compile(r'https?://[^\s<>"]+')
 
 
@@ -181,7 +182,9 @@ async def on_message(message):
             return
 
         view = FileView(file_content, attachment.filename)
-        await message.reply("Что сделать с этим файлом?", view=view)
+        embed = discord.Embed()
+        embed.set_image(url=FILE_GIF_URL)
+        await message.reply("Что сделать с этим файлом?", view=view, embed=embed)
         return
 
     # 2. Ссылка
