@@ -8,44 +8,77 @@ intents.message_content = True
 
 client = discord.Client(intents=intents)
 
-# ID канала, в котором бот будет работать
 MY_CHANNEL_ID = 1558758327377338460
-
-# Регулярное выражение для поиска любой ссылки http/https
 URL_PATTERN = re.compile(r'https?://[^\s<>"]+')
 
 
 def to_raw(link: str) -> str:
-    """Преобразует обычную ссылку GitHub в raw. Если уже raw или не GitHub — возвращает как есть."""
+    """Приводит ссылку к raw-формату для поддерживаемых сервисов."""
+    # GitHub raw — уже raw
     if "raw.githubusercontent.com" in link:
         return link
+
+    # GitHub обычная
     if "github.com" in link and "/blob/" in link:
         return link.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
+
+    # Pastefy
+    if "pastefy.app" in link and "/raw" not in link:
+        return link.rstrip("/") + "/raw"
+
+    # Pastebin
+    if "pastebin.com" in link and "/raw/" not in link:
+        paste_id = link.rstrip("/").split("/")[-1]
+        return f"https://pastebin.com/raw/{paste_id}"
+
+    # GitHub Gist
+    if "gist.github.com" in link and "/raw" not in link:
+        return link.rstrip("/") + "/raw"
+
+    # Hastebin
+    if "hastebin.com" in link and "/raw/" not in link:
+        paste_id = link.rstrip("/").split("/")[-1]
+        return f"https://hastebin.com/raw/{paste_id}"
+
     return link
 
 
 def to_normal(link: str) -> str:
-    """Преобразует raw-ссылку GitHub в обычную. Если не raw — возвращает как есть."""
+    """Убирает raw-формат, возвращая обычную ссылку."""
     if "raw.githubusercontent.com" in link:
         rest = link.replace("https://raw.githubusercontent.com/", "")
         parts = rest.split("/")
         if len(parts) >= 4:
-            owner = parts[0]
-            repo = parts[1]
-            branch = parts[2]
+            owner, repo, branch = parts[0], parts[1], parts[2]
             path = "/".join(parts[3:])
             return f"https://github.com/{owner}/{repo}/blob/{branch}/{path}"
+
+    if "pastefy.app" in link and link.endswith("/raw"):
+        return link[:-4]
+
+    if "pastebin.com/raw/" in link:
+        paste_id = link.rstrip("/").split("/")[-1]
+        return f"https://pastebin.com/{paste_id}"
+
+    if "gist.githubusercontent.com" in link:
+        # https://gist.githubusercontent.com/user/id/raw/... -> https://gist.github.com/user/id
+        parts = link.replace("https://gist.githubusercontent.com/", "").split("/")
+        if len(parts) >= 2:
+            return f"https://gist.github.com/{parts[0]}/{parts[1]}"
+
+    if "hastebin.com/raw/" in link:
+        paste_id = link.rstrip("/").split("/")[-1]
+        return f"https://hastebin.com/{paste_id}"
+
     return link
 
 
 def wrap_loadstring(link: str) -> str:
-    """Оборачивает ссылку в loadstring, предварительно приведя её к raw."""
     raw_link = to_raw(link)
     return f'loadstring(game:HttpGet("{raw_link}"))()'
 
 
 async def fetch_content(link: str) -> str:
-    """Скачивает содержимое по ссылке."""
     async with aiohttp.ClientSession() as session:
         async with session.get(link) as resp:
             if resp.status != 200:
@@ -54,13 +87,8 @@ async def fetch_content(link: str) -> str:
 
 
 async def upload_to_pastefy(content: str, filename: str = "file.lua") -> str:
-    """Создаёт пост на pastefy.app и возвращает ссылку."""
     url = "https://pastefy.app/api/v2/paste"
-    payload = {
-        "content": content,
-        "title": filename,
-        "visibility": "UNLISTED"
-    }
+    payload = {"content": content, "title": filename, "visibility": "UNLISTED"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload) as resp:
             if resp.status not in (200, 201):
@@ -80,29 +108,16 @@ class ActionView(discord.ui.View):
 
     @discord.ui.button(label="Сделать raw", style=discord.ButtonStyle.primary)
     async def make_raw(self, interaction: discord.Interaction, button: discord.ui.Button):
-        result = to_raw(self.link)
-        if result == self.link and "github.com" not in self.link:
-            await interaction.response.send_message(
-                "⚠️ Эта ссылка не GitHub, преобразовать в raw нельзя. Отправляю как есть:\n" + result
-            )
-        else:
-            await interaction.response.send_message(result)
+        await interaction.response.send_message(to_raw(self.link))
 
     @discord.ui.button(label="Сделать без raw", style=discord.ButtonStyle.success)
     async def make_normal(self, interaction: discord.Interaction, button: discord.ui.Button):
-        result = to_normal(self.link)
-        if result == self.link and "raw.githubusercontent.com" not in self.link:
-            await interaction.response.send_message(
-                "⚠️ Эта ссылка не raw-формат GitHub, преобразовать нельзя. Отправляю как есть:\n" + result
-            )
-        else:
-            await interaction.response.send_message(result)
+        await interaction.response.send_message(to_normal(self.link))
 
     @discord.ui.button(label="Отправить файл", style=discord.ButtonStyle.secondary)
     async def send_file(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         raw_link = to_raw(self.link)
-
         try:
             content = await fetch_content(raw_link)
         except Exception as e:
@@ -110,12 +125,11 @@ class ActionView(discord.ui.View):
             return
 
         filename = raw_link.split("/")[-1].split("?")[0] or "file.txt"
-        if not filename.endswith(".txt"):
+        if "." not in filename:
             filename += ".txt"
 
         with open(filename, "w", encoding="utf-8") as f:
             f.write(content)
-
         await interaction.followup.send(file=discord.File(filename))
 
     @discord.ui.button(label="loadstring", style=discord.ButtonStyle.danger)
@@ -126,7 +140,6 @@ class ActionView(discord.ui.View):
     async def make_pastefy(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         raw_link = to_raw(self.link)
-
         try:
             content = await fetch_content(raw_link)
         except Exception as e:
@@ -134,13 +147,11 @@ class ActionView(discord.ui.View):
             return
 
         filename = raw_link.split("/")[-1].split("?")[0] or "file.lua"
-
         try:
             paste_link = await upload_to_pastefy(content, filename)
         except Exception as e:
             await interaction.followup.send(f"❌ Ошибка Pastefy: `{e}`")
             return
-
         await interaction.followup.send(paste_link)
 
 
@@ -153,17 +164,13 @@ async def on_ready():
 async def on_message(message):
     if message.author == client.user:
         return
-
     if message.channel.id != MY_CHANNEL_ID:
         return
 
     content = message.content.strip()
-
-    # Ищем любую ссылку в сообщении
     match = URL_PATTERN.search(content)
     if match:
-        link = match.group(0)
-        view = ActionView(link)
+        view = ActionView(match.group(0))
         await message.reply("Что сделать с этой ссылкой?", view=view)
 
 
