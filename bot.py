@@ -12,7 +12,7 @@ MY_CHANNEL_ID = 1558758327377338460
 
 
 def to_raw(link: str) -> str:
-    """Преобразует обычную ссылку GitHub в raw."""
+    """Преобразует обычную ссылку GitHub в raw. Если уже raw — возвращает как есть."""
     if "raw.githubusercontent.com" in link:
         return link
     if "github.com" in link and "/blob/" in link:
@@ -34,20 +34,24 @@ def to_normal(link: str) -> str:
     return link
 
 
+def wrap_loadstring(link: str) -> str:
+    """Оборачивает ссылку в loadstring, предварительно приведя её к raw."""
+    raw_link = to_raw(link)
+    return f'loadstring(game:HttpGet("{raw_link}"))()'
+
+
 class ActionView(discord.ui.View):
     def __init__(self, link: str):
-        super().__init__(timeout=None)  # кнопки работают бессрочно
+        super().__init__(timeout=None)
         self.link = link
 
     @discord.ui.button(label="Сделать raw", style=discord.ButtonStyle.primary)
     async def make_raw(self, interaction: discord.Interaction, button: discord.ui.Button):
-        result = to_raw(self.link)
-        await interaction.response.send_message(result)
+        await interaction.response.send_message(to_raw(self.link))
 
     @discord.ui.button(label="Сделать без raw", style=discord.ButtonStyle.success)
     async def make_normal(self, interaction: discord.Interaction, button: discord.ui.Button):
-        result = to_normal(self.link)
-        await interaction.response.send_message(result)
+        await interaction.response.send_message(to_normal(self.link))
 
     @discord.ui.button(label="Отправить файл", style=discord.ButtonStyle.secondary)
     async def send_file(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -67,7 +71,6 @@ class ActionView(discord.ui.View):
             await interaction.followup.send(f"❌ Ошибка при скачивании: `{e}`")
             return
 
-        # Определяем имя файла из ссылки
         filename = raw_link.split("/")[-1] or "file.txt"
         if not filename.endswith(".txt"):
             filename += ".txt"
@@ -76,6 +79,10 @@ class ActionView(discord.ui.View):
             f.write(content)
 
         await interaction.followup.send(file=discord.File(filename))
+
+    @discord.ui.button(label="loadstring", style=discord.ButtonStyle.danger)
+    async def make_loadstring(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(f"```lua\n{wrap_loadstring(self.link)}\n```")
 
 
 @client.event
