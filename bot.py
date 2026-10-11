@@ -1,5 +1,6 @@
 import discord
 import os
+import re
 import aiohttp
 
 intents = discord.Intents.default()
@@ -10,9 +11,12 @@ client = discord.Client(intents=intents)
 # ID канала, в котором бот будет работать
 MY_CHANNEL_ID = 1558758327377338460
 
+# Регулярное выражение для поиска любой ссылки http/https
+URL_PATTERN = re.compile(r'https?://[^\s<>"]+')
+
 
 def to_raw(link: str) -> str:
-    """Преобразует обычную ссылку GitHub в raw. Если уже raw — возвращает как есть."""
+    """Преобразует обычную ссылку GitHub в raw. Если уже raw или не GitHub — возвращает как есть."""
     if "raw.githubusercontent.com" in link:
         return link
     if "github.com" in link and "/blob/" in link:
@@ -21,7 +25,7 @@ def to_raw(link: str) -> str:
 
 
 def to_normal(link: str) -> str:
-    """Преобразует raw-ссылку в обычную."""
+    """Преобразует raw-ссылку GitHub в обычную. Если не raw — возвращает как есть."""
     if "raw.githubusercontent.com" in link:
         rest = link.replace("https://raw.githubusercontent.com/", "")
         parts = rest.split("/")
@@ -40,6 +44,15 @@ def wrap_loadstring(link: str) -> str:
     return f'loadstring(game:HttpGet("{raw_link}"))()'
 
 
+async def fetch_content(link: str) -> str:
+    """Скачивает содержимое по ссылке."""
+    async with aiohttp.ClientSession() as session:
+        async with session.get(link) as resp:
+            if resp.status != 200:
+                raise Exception(f"HTTP {resp.status}")
+            return await resp.text()
+
+
 async def upload_to_pastefy(content: str, filename: str = "file.lua") -> str:
     """Создаёт пост на pastefy.app и возвращает ссылку."""
     url = "https://pastefy.app/api/v2/paste"
@@ -52,11 +65,11 @@ async def upload_to_pastefy(content: str, filename: str = "file.lua") -> str:
         async with session.post(url, json=payload) as resp:
             if resp.status not in (200, 201):
                 text = await resp.text()
-                raise Exception(f"Pastefy вернул HTTP {resp.status}: {text[:200]}")
+                raise Exception(f"Pastefy HTTP {resp.status}: {text[:200]}")
             data = await resp.json()
             paste_id = data.get("paste", {}).get("id") or data.get("id")
             if not paste_id:
-                raise Exception(f"Не удалось получить ID из ответа: {data}")
+                raise Exception(f"Не удалось получить ID: {data}")
             return f"https://pastefy.app/{paste_id}"
 
 
@@ -67,11 +80,23 @@ class ActionView(discord.ui.View):
 
     @discord.ui.button(label="Сделать raw", style=discord.ButtonStyle.primary)
     async def make_raw(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(to_raw(self.link))
+        result = to_raw(self.link)
+        if result == self.link and "github.com" not in self.link:
+            await interaction.response.send_message(
+                "⚠️ Эта ссылка не GitHub, преобразовать в raw нельзя. Отправляю как есть:\n" + result
+            )
+        else:
+            await interaction.response.send_message(result)
 
     @discord.ui.button(label="Сделать без raw", style=discord.ButtonStyle.success)
     async def make_normal(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(to_normal(self.link))
+        result = to_normal(self.link)
+        if result == self.link and "raw.githubusercontent.com" not in self.link:
+            await interaction.response.send_message(
+                "⚠️ Эта ссылка не raw-формат GitHub, преобразовать нельзя. Отправляю как есть:\n" + result
+            )
+        else:
+            await interaction.response.send_message(result)
 
     @discord.ui.button(label="Отправить файл", style=discord.ButtonStyle.secondary)
     async def send_file(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -79,19 +104,12 @@ class ActionView(discord.ui.View):
         raw_link = to_raw(self.link)
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(raw_link) as resp:
-                    if resp.status != 200:
-                        await interaction.followup.send(
-                            f"❌ Не удалось получить файл (HTTP {resp.status})."
-                        )
-                        return
-                    content = await resp.text()
+            content = await fetch_content(raw_link)
         except Exception as e:
             await interaction.followup.send(f"❌ Ошибка при скачивании: `{e}`")
             return
 
-        filename = raw_link.split("/")[-1] or "file.txt"
+        filename = raw_link.split("/")[-1].split("?")[0] or "file.txt"
         if not filename.endswith(".txt"):
             filename += ".txt"
 
@@ -110,19 +128,12 @@ class ActionView(discord.ui.View):
         raw_link = to_raw(self.link)
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(raw_link) as resp:
-                    if resp.status != 200:
-                        await interaction.followup.send(
-                            f"❌ Не удалось скачать файл (HTTP {resp.status})."
-                        )
-                        return
-                    content = await resp.text()
+            content = await fetch_content(raw_link)
         except Exception as e:
             await interaction.followup.send(f"❌ Ошибка при скачивании: `{e}`")
             return
 
-        filename = raw_link.split("/")[-1] or "file.lua"
+        filename = raw_link.split("/")[-1].split("?")[0] or "file.lua"
 
         try:
             paste_link = await upload_to_pastefy(content, filename)
@@ -148,8 +159,11 @@ async def on_message(message):
 
     content = message.content.strip()
 
-    if "githubusercontent.com" in content or ("github.com" in content and "/blob/" in content):
-        view = ActionView(content)
+    # Ищем любую ссылку в сообщении
+    match = URL_PATTERN.search(content)
+    if match:
+        link = match.group(0)
+        view = ActionView(link)
         await message.reply("Что сделать с этой ссылкой?", view=view)
 
 
