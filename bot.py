@@ -13,38 +13,24 @@ URL_PATTERN = re.compile(r'https?://[^\s<>"]+')
 
 
 def to_raw(link: str) -> str:
-    """Приводит ссылку к raw-формату для поддерживаемых сервисов."""
-    # GitHub raw — уже raw
     if "raw.githubusercontent.com" in link:
         return link
-
-    # GitHub обычная
     if "github.com" in link and "/blob/" in link:
         return link.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
-
-    # Pastefy
     if "pastefy.app" in link and "/raw" not in link:
         return link.rstrip("/") + "/raw"
-
-    # Pastebin
     if "pastebin.com" in link and "/raw/" not in link:
         paste_id = link.rstrip("/").split("/")[-1]
         return f"https://pastebin.com/raw/{paste_id}"
-
-    # GitHub Gist
     if "gist.github.com" in link and "/raw" not in link:
         return link.rstrip("/") + "/raw"
-
-    # Hastebin
     if "hastebin.com" in link and "/raw/" not in link:
         paste_id = link.rstrip("/").split("/")[-1]
         return f"https://hastebin.com/raw/{paste_id}"
-
     return link
 
 
 def to_normal(link: str) -> str:
-    """Убирает raw-формат, возвращая обычную ссылку."""
     if "raw.githubusercontent.com" in link:
         rest = link.replace("https://raw.githubusercontent.com/", "")
         parts = rest.split("/")
@@ -52,24 +38,18 @@ def to_normal(link: str) -> str:
             owner, repo, branch = parts[0], parts[1], parts[2]
             path = "/".join(parts[3:])
             return f"https://github.com/{owner}/{repo}/blob/{branch}/{path}"
-
     if "pastefy.app" in link and link.endswith("/raw"):
         return link[:-4]
-
     if "pastebin.com/raw/" in link:
         paste_id = link.rstrip("/").split("/")[-1]
         return f"https://pastebin.com/{paste_id}"
-
     if "gist.githubusercontent.com" in link:
-        # https://gist.githubusercontent.com/user/id/raw/... -> https://gist.github.com/user/id
         parts = link.replace("https://gist.githubusercontent.com/", "").split("/")
         if len(parts) >= 2:
             return f"https://gist.github.com/{parts[0]}/{parts[1]}"
-
     if "hastebin.com/raw/" in link:
         paste_id = link.rstrip("/").split("/")[-1]
         return f"https://hastebin.com/{paste_id}"
-
     return link
 
 
@@ -101,7 +81,8 @@ async def upload_to_pastefy(content: str, filename: str = "file.lua") -> str:
             return f"https://pastefy.app/{paste_id}"
 
 
-class ActionView(discord.ui.View):
+class LinkView(discord.ui.View):
+    """Кнопки для ссылки — контент скачивается по URL."""
     def __init__(self, link: str):
         super().__init__(timeout=None)
         self.link = link
@@ -123,11 +104,9 @@ class ActionView(discord.ui.View):
         except Exception as e:
             await interaction.followup.send(f"❌ Ошибка при скачивании: `{e}`")
             return
-
         filename = raw_link.split("/")[-1].split("?")[0] or "file.txt"
         if "." not in filename:
             filename += ".txt"
-
         with open(filename, "w", encoding="utf-8") as f:
             f.write(content)
         await interaction.followup.send(file=discord.File(filename))
@@ -145,7 +124,6 @@ class ActionView(discord.ui.View):
         except Exception as e:
             await interaction.followup.send(f"❌ Ошибка при скачивании: `{e}`")
             return
-
         filename = raw_link.split("/")[-1].split("?")[0] or "file.lua"
         try:
             paste_link = await upload_to_pastefy(content, filename)
@@ -153,6 +131,46 @@ class ActionView(discord.ui.View):
             await interaction.followup.send(f"❌ Ошибка Pastefy: `{e}`")
             return
         await interaction.followup.send(paste_link)
+
+
+class FileView(discord.ui.View):
+    """Кнопки для загруженного файла — контент уже есть в памяти."""
+    def __init__(self, content: str, filename: str):
+        super().__init__(timeout=None)
+        self.content = content
+        self.filename = filename
+
+    @discord.ui.button(label="Отправить файл", style=discord.ButtonStyle.secondary)
+    async def send_file(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        name = self.filename or "file.txt"
+        if not name.endswith(".txt"):
+            name += ".txt"
+        with open(name, "w", encoding="utf-8") as f:
+            f.write(self.content)
+        await interaction.followup.send(file=discord.File(name))
+
+    @discord.ui.button(label="loadstring", style=discord.ButtonStyle.danger)
+    async def make_loadstring(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Для загруженного файла raw-ссылки нет, поэтому оборачивать нечего.
+        # Но можно сохранить на Pastefy и обернуть ссылку на него.
+        await interaction.response.send_message(
+            "⚠️ Для загруженного файла нет ссылки. Нажмите **Pastefy**, чтобы создать ссылку, "
+            "затем используйте кнопку loadstring на ней."
+        )
+
+    @discord.ui.button(label="Pastefy", style=discord.ButtonStyle.primary, row=1)
+    async def make_pastefy(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        filename = self.filename or "file.lua"
+        try:
+            paste_link = await upload_to_pastefy(self.content, filename)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Ошибка Pastefy: `{e}`")
+            return
+        # После создания поста сразу показываем ссылку и создаём LinkView на неё
+        view = LinkView(paste_link)
+        await interaction.followup.send(f"{paste_link}", view=view)
 
 
 @client.event
@@ -168,9 +186,29 @@ async def on_message(message):
         return
 
     content = message.content.strip()
+
+    # 1. Если есть вложение — обрабатываем файл
+    if message.attachments:
+        attachment = message.attachments[0]
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(attachment.url) as resp:
+                    if resp.status != 200:
+                        await message.reply(f"❌ Не удалось скачать файл (HTTP {resp.status}).")
+                        return
+                    file_content = await resp.text()
+        except Exception as e:
+            await message.reply(f"❌ Ошибка при скачивании файла: `{e}`")
+            return
+
+        view = FileView(file_content, attachment.filename)
+        await message.reply("Что сделать с этим файлом?", view=view)
+        return
+
+    # 2. Если есть ссылка — обрабатываем ссылку
     match = URL_PATTERN.search(content)
     if match:
-        view = ActionView(match.group(0))
+        view = LinkView(match.group(0))
         await message.reply("Что сделать с этой ссылкой?", view=view)
 
 
