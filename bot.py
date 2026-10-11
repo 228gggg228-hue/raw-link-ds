@@ -9,6 +9,7 @@ intents.message_content = True
 client = discord.Client(intents=intents)
 
 MY_CHANNEL_ID = 1558758327377338460
+GIF_URL = "https://i.imgur.com/iZuWJ2h.gif"
 URL_PATTERN = re.compile(r'https?://[^\s<>"]+')
 
 
@@ -82,7 +83,6 @@ async def upload_to_pastefy(content: str, filename: str = "file.lua") -> str:
 
 
 class LinkView(discord.ui.View):
-    """Кнопки для ссылки — контент скачивается по URL."""
     def __init__(self, link: str):
         super().__init__(timeout=None)
         self.link = link
@@ -134,7 +134,6 @@ class LinkView(discord.ui.View):
 
 
 class FileView(discord.ui.View):
-    """Кнопки для загруженного файла — только загрузка на Pastefy."""
     def __init__(self, content: str, filename: str):
         super().__init__(timeout=None)
         self.content = content
@@ -189,7 +188,9 @@ async def on_message(message):
     match = URL_PATTERN.search(content)
     if match:
         view = LinkView(match.group(0))
-        await message.reply("Что сделать с этой ссылкой?", view=view)
+        embed = discord.Embed()
+        embed.set_image(url=GIF_URL)
+        await message.reply("Что сделать с этой ссылкой?", view=view, embed=embed)
 
 
 client.run(os.environ["DISCORD_BOT_TOKEN"])
