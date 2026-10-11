@@ -134,32 +134,13 @@ class LinkView(discord.ui.View):
 
 
 class FileView(discord.ui.View):
-    """Кнопки для загруженного файла — контент уже есть в памяти."""
+    """Кнопки для загруженного файла — только загрузка на Pastefy."""
     def __init__(self, content: str, filename: str):
         super().__init__(timeout=None)
         self.content = content
         self.filename = filename
 
-    @discord.ui.button(label="Отправить файл", style=discord.ButtonStyle.secondary)
-    async def send_file(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        name = self.filename or "file.txt"
-        if not name.endswith(".txt"):
-            name += ".txt"
-        with open(name, "w", encoding="utf-8") as f:
-            f.write(self.content)
-        await interaction.followup.send(file=discord.File(name))
-
-    @discord.ui.button(label="loadstring", style=discord.ButtonStyle.danger)
-    async def make_loadstring(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Для загруженного файла raw-ссылки нет, поэтому оборачивать нечего.
-        # Но можно сохранить на Pastefy и обернуть ссылку на него.
-        await interaction.response.send_message(
-            "⚠️ Для загруженного файла нет ссылки. Нажмите **Pastefy**, чтобы создать ссылку, "
-            "затем используйте кнопку loadstring на ней."
-        )
-
-    @discord.ui.button(label="Pastefy", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="Pastefy", style=discord.ButtonStyle.primary)
     async def make_pastefy(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         filename = self.filename or "file.lua"
@@ -168,9 +149,8 @@ class FileView(discord.ui.View):
         except Exception as e:
             await interaction.followup.send(f"❌ Ошибка Pastefy: `{e}`")
             return
-        # После создания поста сразу показываем ссылку и создаём LinkView на неё
         view = LinkView(paste_link)
-        await interaction.followup.send(f"{paste_link}", view=view)
+        await interaction.followup.send(paste_link, view=view)
 
 
 @client.event
@@ -187,7 +167,7 @@ async def on_message(message):
 
     content = message.content.strip()
 
-    # 1. Если есть вложение — обрабатываем файл
+    # 1. Вложение
     if message.attachments:
         attachment = message.attachments[0]
         try:
@@ -205,7 +185,7 @@ async def on_message(message):
         await message.reply("Что сделать с этим файлом?", view=view)
         return
 
-    # 2. Если есть ссылка — обрабатываем ссылку
+    # 2. Ссылка
     match = URL_PATTERN.search(content)
     if match:
         view = LinkView(match.group(0))
