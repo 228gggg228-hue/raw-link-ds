@@ -199,4 +199,4 @@ async def on_message(message):
         await message.reply("Что сделать с этой ссылкой?", view=view, embed=embed)
 
 
-client.run(os.environ["DISCORD_BOT_TOKEN"])
+client.run(os.environ["DISCORD_BOT_TOKEN"], reconnect=True)
