@@ -84,6 +84,83 @@ async def upload_to_pastefy(content: str, filename: str = "file.lua") -> str:
             return f"https://pastefy.app/{paste_id}"
 
 
+# ============================================================
+#  НОВЫЙ КЛАСС: мини-панель с просмотром файла
+# ============================================================
+class FilePreviewView(discord.ui.View):
+    """
+    Показывает файл как 'файловую' панель Discord с возможностью
+    развернуть на весь экран и листать содержимое.
+    """
+
+    def __init__(self, content: str, filename: str):
+        super().__init__(timeout=None)
+        self.content = content
+        self.filename = filename
+
+        # Обрезаем слишком большие файлы, чтобы не превысить лимит Discord
+        max_len = 3800
+        display_content = content if len(content) <= max_len else content[:max_len] + "\n... (файл обрезан)"
+
+        # Контейнер с заголовком и текстом
+        container = discord.ui.Container(
+            discord.ui.TextDisplay(f"### 📄 {filename}\n```\n{display_content}\n```")
+        )
+
+        # Кнопка "Показать полностью" — открывает файл как вложение
+        open_button = discord.ui.Button(
+            label="View whole file",
+            style=discord.ButtonStyle.secondary,
+            emoji="📂",
+            custom_id="view_whole_file",
+        )
+
+        # Кнопки действий
+        pastefy_btn = discord.ui.Button(
+            label="Pastefy", style=discord.ButtonStyle.primary, emoji="📋"
+        )
+        loadstring_btn = discord.ui.Button(
+            label="loadstring", style=discord.ButtonStyle.danger, emoji="⚡"
+        )
+
+        open_button.callback = self.open_full
+        pastefy_btn.callback = self.make_pastefy
+        loadstring_btn.callback = self.make_loadstring
+
+        container.add_item(discord.ui.ActionRow(open_button, pastefy_btn, loadstring_btn))
+
+        self.add_item(container)
+
+    async def open_full(self, interaction: discord.Interaction):
+        """Отправляет файл как вложение — пользователь может открыть его на весь экран."""
+        await interaction.response.defer(ephemeral=True)
+        filename = self.filename or "file.txt"
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(self.content)
+        await interaction.followup.send(file=discord.File(filename), ephemeral=True)
+
+    async def make_pastefy(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        try:
+            paste_link = await upload_to_pastefy(self.content, self.filename)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Ошибка Pastefy: `{e}`")
+            return
+        await interaction.followup.send(paste_link)
+
+    async def make_loadstring(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        try:
+            paste_link = await upload_to_pastefy(self.content, self.filename)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Ошибка Pastefy: `{e}`")
+            return
+        await interaction.followup.send(wrap_loadstring(paste_link))
+
+
+# ============================================================
+#  Старое представление для ссылок (без изменений)
+# ============================================================
 class LinkView(discord.ui.View):
     def __init__(self, link: str):
         super().__init__(timeout=None)
@@ -135,27 +212,9 @@ class LinkView(discord.ui.View):
         await interaction.followup.send(paste_link)
 
 
-class FileView(discord.ui.View):
-    def __init__(self, content: str, filename: str):
-        super().__init__(timeout=None)
-        self.content = content
-        self.filename = filename
-
-    @discord.ui.button(label="Pastefy", style=discord.ButtonStyle.primary)
-    async def make_pastefy(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        filename = self.filename or "file.lua"
-        try:
-            paste_link = await upload_to_pastefy(self.content, filename)
-        except Exception as e:
-            await interaction.followup.send(f"❌ Ошибка Pastefy: `{e}`")
-            return
-        view = LinkView(paste_link)
-        embed = discord.Embed()
-        embed.set_image(url=PASTEFY_GIF_URL)
-        await interaction.followup.send(paste_link, view=view, embed=embed)
-
-
+# ============================================================
+#  Обработчик on_message с новой панелью
+# ============================================================
 @client.event
 async def on_ready():
     print(f'Бот {client.user} запущен и готов к работе!')
@@ -170,7 +229,7 @@ async def on_message(message):
 
     content = message.content.strip()
 
-    # 1. Вложение
+    # 1. Вложение — показываем мини-панель с содержимым
     if message.attachments:
         attachment = message.attachments[0]
         try:
@@ -184,10 +243,8 @@ async def on_message(message):
             await message.reply(f"❌ Ошибка при скачивании файла: `{e}`")
             return
 
-        view = FileView(file_content, attachment.filename)
-        embed = discord.Embed()
-        embed.set_image(url=FILE_GIF_URL)
-        await message.reply("Что сделать с этим файлом?", view=view, embed=embed)
+        view = FilePreviewView(file_content, attachment.filename)
+        await message.reply(view=view)
         return
 
     # 2. Ссылка
