@@ -141,6 +141,15 @@ class FileView(discord.ui.View):
         self.content = content
         self.filename = filename
 
+    @discord.ui.button(label="Сохранить в .txt", style=discord.ButtonStyle.secondary)
+    async def save_txt(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        base = (self.filename or "file").rsplit(".", 1)[0]
+        txt_name = f"{base}.txt"
+        with open(txt_name, "w", encoding="utf-8") as f:
+            f.write(self.content)
+        await interaction.followup.send(file=discord.File(txt_name))
+
     @discord.ui.button(label="Pastefy", style=discord.ButtonStyle.primary)
     async def make_pastefy(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
