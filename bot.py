@@ -177,11 +177,23 @@ async def on_message(message):
     if message.channel.id != MY_CHANNEL_ID:
         return
 
-    content = message.content.strip()
+    # Если сообщение — пересылка, достаём оригинал
+    target = message
+    if message.reference is not None:
+        resolved = message.reference.resolved
+        if isinstance(resolved, discord.Message):
+            target = resolved
+        else:
+            try:
+                target = await message.channel.fetch_message(message.reference.message_id)
+            except Exception:
+                target = message
+
+    content = (target.content or "").strip()
 
     # 1. Вложение
-    if message.attachments:
-        attachment = message.attachments[0]
+    if target.attachments:
+        attachment = target.attachments[0]
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(attachment.url) as resp:
