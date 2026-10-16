@@ -113,6 +113,22 @@ class LinkView(discord.ui.View):
             f.write(content)
         await interaction.followup.send(file=discord.File(filename))
 
+    @discord.ui.button(label="В .lua", style=discord.ButtonStyle.secondary)
+    async def send_lua(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        raw_link = to_raw(self.link)
+        try:
+            content = await fetch_content(raw_link)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Ошибка при скачивании: `{e}`")
+            return
+        base = raw_link.split("/")[-1].split("?")[0] or "file"
+        base = base.rsplit(".", 1)[0]
+        filename = f"{base}.lua"
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(content)
+        await interaction.followup.send(file=discord.File(filename))
+
     @discord.ui.button(label="loadstring", style=discord.ButtonStyle.danger)
     async def make_loadstring(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(wrap_loadstring(self.link))
@@ -150,6 +166,15 @@ class FileView(discord.ui.View):
             f.write(self.content)
         await interaction.followup.send(file=discord.File(txt_name))
 
+    @discord.ui.button(label="Сохранить в .lua", style=discord.ButtonStyle.secondary)
+    async def save_lua(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        base = (self.filename or "file").rsplit(".", 1)[0]
+        lua_name = f"{base}.lua"
+        with open(lua_name, "w", encoding="utf-8") as f:
+            f.write(self.content)
+        await interaction.followup.send(file=discord.File(lua_name))
+
     @discord.ui.button(label="Pastefy", style=discord.ButtonStyle.primary)
     async def make_pastefy(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
@@ -177,7 +202,6 @@ async def on_message(message):
     if message.channel.id != MY_CHANNEL_ID:
         return
 
-    # Если сообщение — пересылка, достаём оригинал
     target = message
     if message.reference is not None:
         resolved = message.reference.resolved
@@ -191,7 +215,6 @@ async def on_message(message):
 
     content = (target.content or "").strip()
 
-    # 1. Вложение
     if target.attachments:
         attachment = target.attachments[0]
         try:
@@ -211,7 +234,6 @@ async def on_message(message):
         await message.reply("Что сделать с этим файлом?", view=view, embed=embed)
         return
 
-    # 2. Ссылка
     match = URL_PATTERN.search(content)
     if match:
         view = LinkView(match.group(0))
