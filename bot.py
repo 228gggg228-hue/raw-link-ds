@@ -3,6 +3,7 @@ import os
 import re
 import aiohttp
 import zipfile
+import rarfile
 import io
 
 intents = discord.Intents.default()
@@ -57,12 +58,11 @@ async def upload_to_pastefy(content: str, filename: str = "file.lua") -> str:
             return f"https://pastefy.app/{paste_id}"
 
 
-# --- ZIP VIEW (Меню выбора файлов внутри архива) ---
+# --- УНИВЕРСАЛЬНЫЙ ПРОСМОТРЩИК АРХИВОВ ---
 class ZipSelect(discord.ui.Select):
     def __init__(self, files_data):
         self.files_data = files_data
         options = []
-        # Ограничение Discord - максимум 25 опций в списке
         for name in list(files_data.keys())[:25]:
             options.append(discord.SelectOption(label=name[:100], description="Нажми, чтобы посмотреть"))
         super().__init__(placeholder="Выбери файл из архива...", min_values=1, max_values=1, options=options)
@@ -81,7 +81,7 @@ class ZipSelect(discord.ui.Select):
             else:
                 await interaction.response.send_message(f"📄 **Содержимое {chosen_file}:**\n```\n{text_content}\n```")
         except UnicodeDecodeError:
-            await interaction.response.send_message(f"❌ Файл `{chosen_file}` — бинарный (картинка/аудио), не могу показать текст.")
+            await interaction.response.send_message(f"❌ Файл `{chosen_file}` — бинарный, не могу показать текст.")
 
 class ZipView(discord.ui.View):
     def __init__(self, files_data):
@@ -94,15 +94,25 @@ class ZipFileView(discord.ui.View):
         self.content_bytes = content_bytes
         self.filename = filename
 
-    @discord.ui.button(label="📦 Открыть ZIP", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="📦 Открыть Архив", style=discord.ButtonStyle.primary)
     async def open_zip(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         files_data = {}
+        
         try:
-            with zipfile.ZipFile(io.BytesIO(self.content_bytes)) as z:
-                for file_info in z.infolist():
-                    if not file_info.is_dir():
-                        files_data[file_info.filename] = z.read(file_info.filename)
+            # Проверяем расширение файла
+            if self.filename.lower().endswith('.rar'):
+                # Используем rarfile для RAR
+                with rarfile.RarFile(io.BytesIO(self.content_bytes)) as rf:
+                    for file_info in rf.infolist():
+                        if not file_info.isdir():
+                            files_data[file_info.filename] = rf.read(file_info.filename)
+            else:
+                # Используем zipfile для ZIP
+                with zipfile.ZipFile(io.BytesIO(self.content_bytes)) as z:
+                    for file_info in z.infolist():
+                        if not file_info.is_dir():
+                            files_data[file_info.filename] = z.read(file_info.filename)
             
             if not files_data:
                 await interaction.followup.send("❌ Архив пуст.")
@@ -110,10 +120,11 @@ class ZipFileView(discord.ui.View):
 
             view = ZipView(files_data)
             await interaction.followup.send(f"📦 **Файлы в архиве `{self.filename}`:**\nВыбери файл из списка ниже:", view=view)
-        except zipfile.BadZipFile:
-            await interaction.followup.send("❌ Это не ZIP архив или он поврежден.")
+            
+        except (zipfile.BadZipFile, rarfile.BadRarFile):
+            await interaction.followup.send("❌ Это не архив или он поврежден.")
         except Exception as e:
-            await interaction.followup.send(f"❌ Ошибка при чтении ZIP: `{e}`")
+            await interaction.followup.send(f"❌ Ошибка при чтении архива: `{e}`")
 
 
 # --- ОБЫЧНЫЕ VIEW (для текста и ссылок) ---
@@ -221,40 +232,47 @@ async def on_message(message):
 
     content = (target.content or "").strip()
 
-    # 1. Вложения (файлы, отправленные напрямую)
+    # 1. Вложения
     if target.attachments:
         attachment = target.attachments[0]
+        
+        # Проверяем, является ли это архивом (ZIP или RAR)
+        if attachment.filename.lower().endswith(('.zip', '.rar')):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(attachment.url) as resp:
+                        if resp.status != 200: return
+                        raw_bytes = await resp.read()
+            except Exception: return
+            
+            view = ZipFileView(raw_bytes, attachment.filename)
+            embed = discord.Embed(title="📦 Архив", description="Нажми на кнопку, чтобы просмотреть файлы.")
+            await message.reply(f"Обнаружен архив `{attachment.filename}`!", view=view, embed=embed)
+            return
+
+        # Обычный текстовый файл
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(attachment.url) as resp:
                     if resp.status != 200: return
-                    raw_bytes = await resp.read()
-        except Exception: return
-
-        if attachment.filename.lower().endswith('.zip'):
-            view = ZipFileView(raw_bytes, attachment.filename)
-            embed = discord.Embed(title="📦 ZIP Архив", description="Нажми на кнопку, чтобы просмотреть файлы.")
-            await message.reply("Обнаружен архив!", view=view, embed=embed)
-            return
-
-        try:
-            file_content = raw_bytes.decode('utf-8')
+                    file_content = (await resp.read()).decode('utf-8')
         except UnicodeDecodeError:
             await message.reply("❌ Файл бинарный, не могу прочитать.")
             return
+        except Exception: return
 
         view = FileView(file_content, attachment.filename)
         embed = discord.Embed(); embed.set_image(url=FILE_GIF_URL)
         await message.reply("Что сделать с этим файлом?", view=view, embed=embed)
         return
 
-    # 2. Ссылки (текст)
+    # 2. Ссылки
     match = URL_PATTERN.search(content)
     if match:
         link = match.group(0)
         
-        # Если ссылка ведет на ZIP файл (например, при шаринге с телефона)
-        if link.lower().endswith('.zip'):
+        # Если ссылка ведет на ZIP или RAR
+        if link.lower().endswith(('.zip', '.rar')):
             await message.reply("⏳ Скачиваю архив по ссылке...")
             try:
                 async with aiohttp.ClientSession() as session:
@@ -266,7 +284,7 @@ async def on_message(message):
                 
                 filename = link.split("/")[-1].split("?")[0]
                 view = ZipFileView(raw_bytes, filename)
-                embed = discord.Embed(title="📦 ZIP Архив по ссылке", description="Нажми на кнопку, чтобы просмотреть файлы.")
+                embed = discord.Embed(title="📦 Архив по ссылке", description="Нажми на кнопку, чтобы просмотреть файлы.")
                 await message.reply("Обнаружен архив!", view=view, embed=embed)
             except Exception as e:
                 await message.reply(f"❌ Ошибка: `{e}`")
