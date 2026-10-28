@@ -2,3 +2,4 @@ staypresent[prod]
 discord.py
 aiohttp
 rarfile
+unrar-cffi
