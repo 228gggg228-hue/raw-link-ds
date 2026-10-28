@@ -57,27 +57,22 @@ async def upload_to_pastefy(content: str, filename: str = "file.lua") -> str:
             return f"https://pastefy.app/{paste_id}"
 
 
-# --- ZIP VIEW ---
+# --- ZIP VIEW (Меню выбора файлов внутри архива) ---
 class ZipSelect(discord.ui.Select):
-    def __init__(self, files_data, zip_name):
+    def __init__(self, files_data):
         self.files_data = files_data
-        self.zip_name = zip_name
-        
-        # Создаем опции для меню (максимум 25 файлов, ограничение Discord)
         options = []
+        # Ограничение Discord - максимум 25 опций в списке
         for name in list(files_data.keys())[:25]:
             options.append(discord.SelectOption(label=name[:100], description="Нажми, чтобы посмотреть"))
-            
         super().__init__(placeholder="Выбери файл из архива...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
         chosen_file = self.values[0]
         content_bytes = self.files_data[chosen_file]
         
-        # Пытаемся декодировать как текст
         try:
             text_content = content_bytes.decode('utf-8')
-            # Если текст длинный — отправляем файлом .txt
             if len(text_content) > 1900:
                 filename = f"{chosen_file.split('/')[-1]}.txt"
                 with open(filename, "w", encoding="utf-8") as f:
@@ -86,14 +81,42 @@ class ZipSelect(discord.ui.Select):
             else:
                 await interaction.response.send_message(f"📄 **Содержимое {chosen_file}:**\n```\n{text_content}\n```")
         except UnicodeDecodeError:
-            await interaction.response.send_message(f"❌ Файл `{chosen_file}` — бинарный (картинка/архив), не могу показать текст.")
+            await interaction.response.send_message(f"❌ Файл `{chosen_file}` — бинарный (картинка/аудио), не могу показать текст.")
 
 class ZipView(discord.ui.View):
-    def __init__(self, files_data, zip_name):
+    def __init__(self, files_data):
         super().__init__(timeout=300)
-        self.add_item(ZipSelect(files_data, zip_name))
+        self.add_item(ZipSelect(files_data))
+
+class ZipFileView(discord.ui.View):
+    def __init__(self, content_bytes, filename):
+        super().__init__(timeout=None)
+        self.content_bytes = content_bytes
+        self.filename = filename
+
+    @discord.ui.button(label="📦 Открыть ZIP", style=discord.ButtonStyle.primary)
+    async def open_zip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        files_data = {}
+        try:
+            with zipfile.ZipFile(io.BytesIO(self.content_bytes)) as z:
+                for file_info in z.infolist():
+                    if not file_info.is_dir():
+                        files_data[file_info.filename] = z.read(file_info.filename)
+            
+            if not files_data:
+                await interaction.followup.send("❌ Архив пуст.")
+                return
+
+            view = ZipView(files_data)
+            await interaction.followup.send(f"📦 **Файлы в архиве `{self.filename}`:**\nВыбери файл из списка ниже:", view=view)
+        except zipfile.BadZipFile:
+            await interaction.followup.send("❌ Это не ZIP архив или он поврежден.")
+        except Exception as e:
+            await interaction.followup.send(f"❌ Ошибка при чтении ZIP: `{e}`")
 
 
+# --- ОБЫЧНЫЕ VIEW (для текста и ссылок) ---
 class FileView(discord.ui.View):
     def __init__(self, content: str, filename: str):
         super().__init__(timeout=None)
@@ -126,35 +149,6 @@ class FileView(discord.ui.View):
             await interaction.followup.send(paste_link, view=view, embed=embed)
         except Exception as e:
             await interaction.followup.send(f"❌ Ошибка Pastefy: `{e}`")
-
-class ZipFileView(discord.ui.View):
-    def __init__(self, content_bytes, filename):
-        super().__init__(timeout=None)
-        self.content_bytes = content_bytes
-        self.filename = filename
-
-    @discord.ui.button(label="📦 Открыть ZIP", style=discord.ButtonStyle.primary)
-    async def open_zip(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        files_data = {}
-        try:
-            with zipfile.ZipFile(io.BytesIO(self.content_bytes)) as z:
-                for file_info in z.infolist():
-                    if not file_info.is_dir():
-                        # Читаем в память
-                        files_data[file_info.filename] = z.read(file_info.filename)
-            
-            if not files_data:
-                await interaction.followup.send("❌ Архив пуст.")
-                return
-
-            view = ZipView(files_data, self.filename)
-            await interaction.followup.send(f"📦 **Файлы в архиве `{self.filename}`:**\nВыбери файл из списка ниже:", view=view)
-            
-        except zipfile.BadZipFile:
-            await interaction.followup.send("❌ Это не ZIP архив или он поврежден.")
-        except Exception as e:
-            await interaction.followup.send(f"❌ Ошибка при чтении ZIP: `{e}`")
 
 
 class LinkView(discord.ui.View):
@@ -227,6 +221,7 @@ async def on_message(message):
 
     content = (target.content or "").strip()
 
+    # 1. Вложения (файлы, отправленные напрямую)
     if target.attachments:
         attachment = target.attachments[0]
         try:
@@ -236,14 +231,12 @@ async def on_message(message):
                     raw_bytes = await resp.read()
         except Exception: return
 
-        # Если это ZIP - показываем специальное меню
-        if attachment.filename.endswith('.zip'):
+        if attachment.filename.lower().endswith('.zip'):
             view = ZipFileView(raw_bytes, attachment.filename)
             embed = discord.Embed(title="📦 ZIP Архив", description="Нажми на кнопку, чтобы просмотреть файлы.")
             await message.reply("Обнаружен архив!", view=view, embed=embed)
             return
 
-        # Обычный текстовый файл
         try:
             file_content = raw_bytes.decode('utf-8')
         except UnicodeDecodeError:
@@ -255,9 +248,32 @@ async def on_message(message):
         await message.reply("Что сделать с этим файлом?", view=view, embed=embed)
         return
 
+    # 2. Ссылки (текст)
     match = URL_PATTERN.search(content)
     if match:
-        view = LinkView(match.group(0))
+        link = match.group(0)
+        
+        # Если ссылка ведет на ZIP файл (например, при шаринге с телефона)
+        if link.lower().endswith('.zip'):
+            await message.reply("⏳ Скачиваю архив по ссылке...")
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(link) as resp:
+                        if resp.status != 200:
+                            await message.reply(f"❌ Не удалось скачать (HTTP {resp.status})")
+                            return
+                        raw_bytes = await resp.read()
+                
+                filename = link.split("/")[-1].split("?")[0]
+                view = ZipFileView(raw_bytes, filename)
+                embed = discord.Embed(title="📦 ZIP Архив по ссылке", description="Нажми на кнопку, чтобы просмотреть файлы.")
+                await message.reply("Обнаружен архив!", view=view, embed=embed)
+            except Exception as e:
+                await message.reply(f"❌ Ошибка: `{e}`")
+            return
+
+        # Обычная ссылка
+        view = LinkView(link)
         embed = discord.Embed(); embed.set_image(url=GIF_URL)
         await message.reply("Что сделать с этой ссылкой?", view=view, embed=embed)
 
