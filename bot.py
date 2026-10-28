@@ -6,8 +6,40 @@ import zipfile
 import rarfile
 import io
 
-# rarfile сам найдёт установленную утилиту (unar / bsdtar / unrar),
-# поэтому ничего принудительно настраивать не нужно.
+import tempfile
+
+
+def read_rar(data: bytes) -> dict:
+    """Читает RAR. Сначала unrar-cffi (всё встроено в pip-пакет),
+    если его нет, то rarfile (нужна системная утилита)."""
+    files = {}
+    try:
+        from unrar.cffi import rarfile as cffi_rar
+    except ImportError:
+        cffi_rar = None
+
+    if cffi_rar is not None:
+        with tempfile.NamedTemporaryFile(suffix=".rar", delete=False) as tmp:
+            tmp.write(data)
+            path = tmp.name
+        try:
+            rf = cffi_rar.RarFile(path)
+            for name in rf.namelist():
+                if name.endswith(("/", "\\")):
+                    continue
+                try:
+                    files[name] = rf.read(name)
+                except Exception:
+                    continue
+        finally:
+            os.remove(path)
+        return files
+
+    with rarfile.RarFile(io.BytesIO(data)) as rf:
+        for file_info in rf.infolist():
+            if not file_info.isdir():
+                files[file_info.filename] = rf.read(file_info.filename)
+    return files
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -104,10 +136,7 @@ class ZipFileView(discord.ui.View):
         
         try:
             if self.filename.lower().endswith('.rar'):
-                with rarfile.RarFile(io.BytesIO(self.content_bytes)) as rf:
-                    for file_info in rf.infolist():
-                        if not file_info.isdir():
-                            files_data[file_info.filename] = rf.read(file_info.filename)
+                files_data = read_rar(self.content_bytes)
             else:
                 with zipfile.ZipFile(io.BytesIO(self.content_bytes)) as z:
                     for file_info in z.infolist():
