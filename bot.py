@@ -6,8 +6,8 @@ import zipfile
 import rarfile
 import io
 
-# === ПРИНУДИТЕЛЬНАЯ НАСТРОЙКА ДЛЯ RAR ===
-rarfile.UNRAR_TOOL = "bsdtar"  # Используем bsdtar для распаковки
+# rarfile сам найдёт установленную утилиту (unar / bsdtar / unrar),
+# поэтому ничего принудительно настраивать не нужно.
 
 intents = discord.Intents.default()
 intents.message_content = True
