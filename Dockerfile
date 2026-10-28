@@ -1,11 +1,7 @@
 FROM python:3.10-slim
 
-# Устанавливаем ВСЕ возможные утилиты для распаковки архивов
-RUN apt-get update && apt-get install -y \
-    unrar-free \
-    unar \
-    p7zip-full \
-    && rm -rf /var/lib/apt/lists/*
+# Устанавливаем bsdtar (libarchive-tools) для распаковки RAR
+RUN apt-get update && apt-get install -y libarchive-tools && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY requirements.txt .
