@@ -1,7 +1,7 @@
 FROM python:3.10-slim
 
 # Устанавливаем unrar для работы библиотеки rarfile
-RUN apt-get update && apt-get install -y unrar-free && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y unar && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY requirements.txt .
