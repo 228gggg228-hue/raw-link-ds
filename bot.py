@@ -2,6 +2,8 @@ import discord
 import os
 import re
 import aiohttp
+import zipfile
+import io
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -16,56 +18,31 @@ URL_PATTERN = re.compile(r'https?://[^\s<>"]+')
 
 
 def to_raw(link: str) -> str:
-    if "raw.githubusercontent.com" in link:
-        return link
+    if "raw.githubusercontent.com" in link: return link
     if "github.com" in link and "/blob/" in link:
         return link.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
-    if "pastefy.app" in link and "/raw" not in link:
-        return link.rstrip("/") + "/raw"
+    if "pastefy.app" in link and "/raw" not in link: return link.rstrip("/") + "/raw"
     if "pastebin.com" in link and "/raw/" not in link:
-        paste_id = link.rstrip("/").split("/")[-1]
-        return f"https://pastebin.com/raw/{paste_id}"
-    if "gist.github.com" in link and "/raw" not in link:
-        return link.rstrip("/") + "/raw"
-    if "hastebin.com" in link and "/raw/" not in link:
-        paste_id = link.rstrip("/").split("/")[-1]
-        return f"https://hastebin.com/raw/{paste_id}"
+        return f"https://pastebin.com/raw/{link.rstrip('/').split('/')[-1]}"
     return link
 
 
 def to_normal(link: str) -> str:
     if "raw.githubusercontent.com" in link:
-        rest = link.replace("https://raw.githubusercontent.com/", "")
-        parts = rest.split("/")
-        if len(parts) >= 4:
-            owner, repo, branch = parts[0], parts[1], parts[2]
-            path = "/".join(parts[3:])
-            return f"https://github.com/{owner}/{repo}/blob/{branch}/{path}"
-    if "pastefy.app" in link and link.endswith("/raw"):
-        return link[:-4]
-    if "pastebin.com/raw/" in link:
-        paste_id = link.rstrip("/").split("/")[-1]
-        return f"https://pastebin.com/{paste_id}"
-    if "gist.githubusercontent.com" in link:
-        parts = link.replace("https://gist.githubusercontent.com/", "").split("/")
-        if len(parts) >= 2:
-            return f"https://gist.github.com/{parts[0]}/{parts[1]}"
-    if "hastebin.com/raw/" in link:
-        paste_id = link.rstrip("/").split("/")[-1]
-        return f"https://hastebin.com/{paste_id}"
+        parts = link.replace("https://raw.githubusercontent.com/", "").split("/")
+        if len(parts) >= 4: return f"https://github.com/{parts[0]}/{parts[1]}/blob/{parts[2]}/{'/'.join(parts[3:])}"
+    if "pastefy.app" in link and link.endswith("/raw"): return link[:-4]
     return link
 
 
 def wrap_loadstring(link: str) -> str:
-    raw_link = to_raw(link)
-    return f'loadstring(game:HttpGet("{raw_link}"))()'
+    return f'loadstring(game:HttpGet("{to_raw(link)}"))()'
 
 
 async def fetch_content(link: str) -> str:
     async with aiohttp.ClientSession() as session:
         async with session.get(link) as resp:
-            if resp.status != 200:
-                raise Exception(f"HTTP {resp.status}")
+            if resp.status != 200: raise Exception(f"HTTP {resp.status}")
             return await resp.text()
 
 
@@ -74,14 +51,110 @@ async def upload_to_pastefy(content: str, filename: str = "file.lua") -> str:
     payload = {"content": content, "title": filename, "visibility": "UNLISTED"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload) as resp:
-            if resp.status not in (200, 201):
-                text = await resp.text()
-                raise Exception(f"Pastefy HTTP {resp.status}: {text[:200]}")
+            if resp.status not in (200, 201): raise Exception(f"Pastefy HTTP {resp.status}")
             data = await resp.json()
             paste_id = data.get("paste", {}).get("id") or data.get("id")
-            if not paste_id:
-                raise Exception(f"Не удалось получить ID: {data}")
             return f"https://pastefy.app/{paste_id}"
+
+
+# --- ZIP VIEW ---
+class ZipSelect(discord.ui.Select):
+    def __init__(self, files_data, zip_name):
+        self.files_data = files_data
+        self.zip_name = zip_name
+        
+        # Создаем опции для меню (максимум 25 файлов, ограничение Discord)
+        options = []
+        for name in list(files_data.keys())[:25]:
+            options.append(discord.SelectOption(label=name[:100], description="Нажми, чтобы посмотреть"))
+            
+        super().__init__(placeholder="Выбери файл из архива...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        chosen_file = self.values[0]
+        content_bytes = self.files_data[chosen_file]
+        
+        # Пытаемся декодировать как текст
+        try:
+            text_content = content_bytes.decode('utf-8')
+            # Если текст длинный — отправляем файлом .txt
+            if len(text_content) > 1900:
+                filename = f"{chosen_file.split('/')[-1]}.txt"
+                with open(filename, "w", encoding="utf-8") as f:
+                    f.write(text_content)
+                await interaction.response.send_message(f"📄 Файл `{chosen_file}` слишком большой, вот он в .txt:", file=discord.File(filename))
+            else:
+                await interaction.response.send_message(f"📄 **Содержимое {chosen_file}:**\n```\n{text_content}\n```")
+        except UnicodeDecodeError:
+            await interaction.response.send_message(f"❌ Файл `{chosen_file}` — бинарный (картинка/архив), не могу показать текст.")
+
+class ZipView(discord.ui.View):
+    def __init__(self, files_data, zip_name):
+        super().__init__(timeout=300)
+        self.add_item(ZipSelect(files_data, zip_name))
+
+
+class FileView(discord.ui.View):
+    def __init__(self, content: str, filename: str):
+        super().__init__(timeout=None)
+        self.content = content
+        self.filename = filename
+
+    @discord.ui.button(label="Сохранить в .txt", style=discord.ButtonStyle.secondary)
+    async def save_txt(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        base = (self.filename or "file").rsplit(".", 1)[0]
+        txt_name = f"{base}.txt"
+        with open(txt_name, "w", encoding="utf-8") as f: f.write(self.content)
+        await interaction.followup.send(file=discord.File(txt_name))
+
+    @discord.ui.button(label="Сохранить в .lua", style=discord.ButtonStyle.secondary)
+    async def save_lua(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        base = (self.filename or "file").rsplit(".", 1)[0]
+        lua_name = f"{base}.lua"
+        with open(lua_name, "w", encoding="utf-8") as f: f.write(self.content)
+        await interaction.followup.send(file=discord.File(lua_name))
+
+    @discord.ui.button(label="Pastefy", style=discord.ButtonStyle.primary)
+    async def make_pastefy(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        try:
+            paste_link = await upload_to_pastefy(self.content, self.filename or "file.lua")
+            view = LinkView(paste_link)
+            embed = discord.Embed(); embed.set_image(url=PASTEFY_GIF_URL)
+            await interaction.followup.send(paste_link, view=view, embed=embed)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Ошибка Pastefy: `{e}`")
+
+class ZipFileView(discord.ui.View):
+    def __init__(self, content_bytes, filename):
+        super().__init__(timeout=None)
+        self.content_bytes = content_bytes
+        self.filename = filename
+
+    @discord.ui.button(label="📦 Открыть ZIP", style=discord.ButtonStyle.primary)
+    async def open_zip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        files_data = {}
+        try:
+            with zipfile.ZipFile(io.BytesIO(self.content_bytes)) as z:
+                for file_info in z.infolist():
+                    if not file_info.is_dir():
+                        # Читаем в память
+                        files_data[file_info.filename] = z.read(file_info.filename)
+            
+            if not files_data:
+                await interaction.followup.send("❌ Архив пуст.")
+                return
+
+            view = ZipView(files_data, self.filename)
+            await interaction.followup.send(f"📦 **Файлы в архиве `{self.filename}`:**\nВыбери файл из списка ниже:", view=view)
+            
+        except zipfile.BadZipFile:
+            await interaction.followup.send("❌ Это не ZIP архив или он поврежден.")
+        except Exception as e:
+            await interaction.followup.send(f"❌ Ошибка при чтении ZIP: `{e}`")
 
 
 class LinkView(discord.ui.View):
@@ -100,34 +173,26 @@ class LinkView(discord.ui.View):
     @discord.ui.button(label="Отправить файл", style=discord.ButtonStyle.secondary)
     async def send_file(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        raw_link = to_raw(self.link)
         try:
-            content = await fetch_content(raw_link)
+            content = await fetch_content(to_raw(self.link))
+            filename = to_raw(self.link).split("/")[-1].split("?")[0] or "file.txt"
+            if "." not in filename: filename += ".txt"
+            with open(filename, "w", encoding="utf-8") as f: f.write(content)
+            await interaction.followup.send(file=discord.File(filename))
         except Exception as e:
             await interaction.followup.send(f"❌ Ошибка при скачивании: `{e}`")
-            return
-        filename = raw_link.split("/")[-1].split("?")[0] or "file.txt"
-        if "." not in filename:
-            filename += ".txt"
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(content)
-        await interaction.followup.send(file=discord.File(filename))
 
     @discord.ui.button(label="В .lua", style=discord.ButtonStyle.secondary)
     async def send_lua(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        raw_link = to_raw(self.link)
         try:
-            content = await fetch_content(raw_link)
+            content = await fetch_content(to_raw(self.link))
+            base = to_raw(self.link).split("/")[-1].split("?")[0] or "file"
+            filename = f"{base.rsplit('.', 1)[0]}.lua"
+            with open(filename, "w", encoding="utf-8") as f: f.write(content)
+            await interaction.followup.send(file=discord.File(filename))
         except Exception as e:
             await interaction.followup.send(f"❌ Ошибка при скачивании: `{e}`")
-            return
-        base = raw_link.split("/")[-1].split("?")[0] or "file"
-        base = base.rsplit(".", 1)[0]
-        filename = f"{base}.lua"
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(content)
-        await interaction.followup.send(file=discord.File(filename))
 
     @discord.ui.button(label="loadstring", style=discord.ButtonStyle.danger)
     async def make_loadstring(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -136,58 +201,13 @@ class LinkView(discord.ui.View):
     @discord.ui.button(label="Pastefy", style=discord.ButtonStyle.primary, row=1)
     async def make_pastefy(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        raw_link = to_raw(self.link)
         try:
-            content = await fetch_content(raw_link)
-        except Exception as e:
-            await interaction.followup.send(f"❌ Ошибка при скачивании: `{e}`")
-            return
-        filename = raw_link.split("/")[-1].split("?")[0] or "file.lua"
-        try:
+            content = await fetch_content(to_raw(self.link))
+            filename = to_raw(self.link).split("/")[-1].split("?")[0] or "file.lua"
             paste_link = await upload_to_pastefy(content, filename)
+            await interaction.followup.send(paste_link)
         except Exception as e:
             await interaction.followup.send(f"❌ Ошибка Pastefy: `{e}`")
-            return
-        await interaction.followup.send(paste_link)
-
-
-class FileView(discord.ui.View):
-    def __init__(self, content: str, filename: str):
-        super().__init__(timeout=None)
-        self.content = content
-        self.filename = filename
-
-    @discord.ui.button(label="Сохранить в .txt", style=discord.ButtonStyle.secondary)
-    async def save_txt(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        base = (self.filename or "file").rsplit(".", 1)[0]
-        txt_name = f"{base}.txt"
-        with open(txt_name, "w", encoding="utf-8") as f:
-            f.write(self.content)
-        await interaction.followup.send(file=discord.File(txt_name))
-
-    @discord.ui.button(label="Сохранить в .lua", style=discord.ButtonStyle.secondary)
-    async def save_lua(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        base = (self.filename or "file").rsplit(".", 1)[0]
-        lua_name = f"{base}.lua"
-        with open(lua_name, "w", encoding="utf-8") as f:
-            f.write(self.content)
-        await interaction.followup.send(file=discord.File(lua_name))
-
-    @discord.ui.button(label="Pastefy", style=discord.ButtonStyle.primary)
-    async def make_pastefy(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        filename = self.filename or "file.lua"
-        try:
-            paste_link = await upload_to_pastefy(self.content, filename)
-        except Exception as e:
-            await interaction.followup.send(f"❌ Ошибка Pastefy: `{e}`")
-            return
-        view = LinkView(paste_link)
-        embed = discord.Embed()
-        embed.set_image(url=PASTEFY_GIF_URL)
-        await interaction.followup.send(paste_link, view=view, embed=embed)
 
 
 @client.event
@@ -197,21 +217,13 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
-    if message.author == client.user:
-        return
-    if message.channel.id != MY_CHANNEL_ID:
-        return
+    if message.author == client.user: return
+    if message.channel.id != MY_CHANNEL_ID: return
 
     target = message
     if message.reference is not None:
         resolved = message.reference.resolved
-        if isinstance(resolved, discord.Message):
-            target = resolved
-        else:
-            try:
-                target = await message.channel.fetch_message(message.reference.message_id)
-            except Exception:
-                target = message
+        target = resolved if isinstance(resolved, discord.Message) else await message.channel.fetch_message(message.reference.message_id)
 
     content = (target.content or "").strip()
 
@@ -220,25 +232,33 @@ async def on_message(message):
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(attachment.url) as resp:
-                    if resp.status != 200:
-                        await message.reply(f"❌ Не удалось скачать файл (HTTP {resp.status}).")
-                        return
-                    file_content = await resp.text()
-        except Exception as e:
-            await message.reply(f"❌ Ошибка при скачивании файла: `{e}`")
+                    if resp.status != 200: return
+                    raw_bytes = await resp.read()
+        except Exception: return
+
+        # Если это ZIP - показываем специальное меню
+        if attachment.filename.endswith('.zip'):
+            view = ZipFileView(raw_bytes, attachment.filename)
+            embed = discord.Embed(title="📦 ZIP Архив", description="Нажми на кнопку, чтобы просмотреть файлы.")
+            await message.reply("Обнаружен архив!", view=view, embed=embed)
+            return
+
+        # Обычный текстовый файл
+        try:
+            file_content = raw_bytes.decode('utf-8')
+        except UnicodeDecodeError:
+            await message.reply("❌ Файл бинарный, не могу прочитать.")
             return
 
         view = FileView(file_content, attachment.filename)
-        embed = discord.Embed()
-        embed.set_image(url=FILE_GIF_URL)
+        embed = discord.Embed(); embed.set_image(url=FILE_GIF_URL)
         await message.reply("Что сделать с этим файлом?", view=view, embed=embed)
         return
 
     match = URL_PATTERN.search(content)
     if match:
         view = LinkView(match.group(0))
-        embed = discord.Embed()
-        embed.set_image(url=GIF_URL)
+        embed = discord.Embed(); embed.set_image(url=GIF_URL)
         await message.reply("Что сделать с этой ссылкой?", view=view, embed=embed)
 
 
