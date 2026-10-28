@@ -7,8 +7,7 @@ import rarfile
 import io
 
 # === ПРИНУДИТЕЛЬНАЯ НАСТРОЙКА ДЛЯ RAR ===
-rarfile.UNRAR_TOOL = "unar"  # Указываем unar как основной
-rarfile.SEVENZIP_TOOL = "7z" # Запасной вариант
+rarfile.UNRAR_TOOL = "bsdtar"  # Используем bsdtar для распаковки
 
 intents = discord.Intents.default()
 intents.message_content = True
