@@ -6,6 +6,10 @@ import zipfile
 import rarfile
 import io
 
+# === ПРИНУДИТЕЛЬНАЯ НАСТРОЙКА ДЛЯ RAR ===
+rarfile.UNRAR_TOOL = "unar"  # Указываем unar как основной
+rarfile.SEVENZIP_TOOL = "7z" # Запасной вариант
+
 intents = discord.Intents.default()
 intents.message_content = True
 
@@ -100,15 +104,12 @@ class ZipFileView(discord.ui.View):
         files_data = {}
         
         try:
-            # Проверяем расширение файла
             if self.filename.lower().endswith('.rar'):
-                # Используем rarfile для RAR
                 with rarfile.RarFile(io.BytesIO(self.content_bytes)) as rf:
                     for file_info in rf.infolist():
                         if not file_info.isdir():
                             files_data[file_info.filename] = rf.read(file_info.filename)
             else:
-                # Используем zipfile для ZIP
                 with zipfile.ZipFile(io.BytesIO(self.content_bytes)) as z:
                     for file_info in z.infolist():
                         if not file_info.is_dir():
@@ -232,11 +233,9 @@ async def on_message(message):
 
     content = (target.content or "").strip()
 
-    # 1. Вложения
     if target.attachments:
         attachment = target.attachments[0]
         
-        # Проверяем, является ли это архивом (ZIP или RAR)
         if attachment.filename.lower().endswith(('.zip', '.rar')):
             try:
                 async with aiohttp.ClientSession() as session:
@@ -250,7 +249,6 @@ async def on_message(message):
             await message.reply(f"Обнаружен архив `{attachment.filename}`!", view=view, embed=embed)
             return
 
-        # Обычный текстовый файл
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(attachment.url) as resp:
@@ -266,12 +264,10 @@ async def on_message(message):
         await message.reply("Что сделать с этим файлом?", view=view, embed=embed)
         return
 
-    # 2. Ссылки
     match = URL_PATTERN.search(content)
     if match:
         link = match.group(0)
         
-        # Если ссылка ведет на ZIP или RAR
         if link.lower().endswith(('.zip', '.rar')):
             await message.reply("⏳ Скачиваю архив по ссылке...")
             try:
@@ -290,7 +286,6 @@ async def on_message(message):
                 await message.reply(f"❌ Ошибка: `{e}`")
             return
 
-        # Обычная ссылка
         view = LinkView(link)
         embed = discord.Embed(); embed.set_image(url=GIF_URL)
         await message.reply("Что сделать с этой ссылкой?", view=view, embed=embed)
