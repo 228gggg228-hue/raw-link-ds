@@ -1,3 +1,4 @@
 staypresent[prod]
 discord.py
 aiohttp
+rarfile
